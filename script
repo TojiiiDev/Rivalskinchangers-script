@@ -2,7 +2,7 @@
     CUSTOM LAUNCHER PRO
     Interface persistante
     Drag + RightShift + Settings + Notifications
-    Attente du chargement du jeu + Auto Execute + Silent Load
+    Auto Execute forcé + Attente du chargement du jeu
 ]]
 
 local Players = game:GetService("Players")
@@ -11,7 +11,11 @@ local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local playerGui = player:WaitForChild("PlayerGui", 15)
+if not playerGui then
+    warn("[CustomLauncher] PlayerGui introuvable après 15 secondes.")
+    return
+end
 
 -- ==========================================
 -- CONFIGURATION
@@ -38,7 +42,7 @@ local Config = {
 -- ==========================================
 
 local Settings = {
-    AutoExecute = false,
+    AutoExecute = true,   -- forcé à true par défaut
     SilentLoad = false,
     Notifications = true,
 }
@@ -851,20 +855,18 @@ startButton.Activated:Connect(function()
 end)
 
 -- ==========================================
--- AUTO EXECUTE
+-- AUTO EXECUTE FORCÉ
 -- ==========================================
 
-if Settings.AutoExecute then
-    task.spawn(function()
-        task.wait(0.5)
-        local success = runAction()
-        started = success
-        if success then
-            startButton.Visible = false
-            subtitle.Text = "Chargé • RightShift : paramètres"
-        end
-    end)
-end
+task.spawn(function()
+    task.wait(1)
+    local success = runAction()
+    started = success
+    if success then
+        startButton.Visible = false
+        subtitle.Text = "Chargé • RightShift : paramètres"
+    end
+end)
 
 -- ==========================================
 -- RIGHT SHIFT : AFFICHER / MASQUER
