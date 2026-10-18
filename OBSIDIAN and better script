@@ -1,0 +1,666 @@
+--[[
+    Yabujin Clone - Rivals Skin Changer
+    Bypass AC (challenge solver) + Skin Changer complet + Obsidian UI
+]]
+
+-- ==========================================
+-- 1. AC BYPASS (Nouveau - Challenge Solver)
+-- ==========================================
+pcall(function()
+    local bypassed = false
+    local kKickNames = {"Kick", "kick"}
+    local kProtectedProperties = {Enabled = true, Disabled = false}
+    local kSlotMap = {[69] = 2, [138] = 3, [207] = 4, [276] = 5, [345] = 6, [414] = 7}
+    local kFilledSub = {1, 2, 3, 4, 5}
+
+    local Players = cloneref(game:GetService("Players"))
+    local ReplicatedFirst = cloneref(game:GetService("ReplicatedFirst"))
+    local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+    local ScriptContext = cloneref(game:GetService("ScriptContext"))
+
+    local LocalPlayer = Players.LocalPlayer
+
+    local ac_script = ReplicatedFirst:WaitForChild("LocalScript3")
+    local ac_event = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RemoteEvent")
+
+    local last = nil
+    local first_seen = false
+    local hijack_ready = false
+    local client_id
+    local expected_interval = 0.6
+    local min_interval = 0.25
+    local ema_alpha = 0.5
+    local samples = 0
+    local hidden_fn = {}
+    local max_stack_depth = 128
+
+    if not setstackhidden then
+        local function ValidTraceback(s)
+            local dotPos = string.find(s, "%.")
+            local colonPos = string.find(s, ":")
+            if not dotPos then return false end
+            if not colonPos then return true end
+            return dotPos < colonPos
+        end
+
+        local function TracebackLines(str, lvl)
+            local pos = lvl
+            return function()
+                if not pos then return nil end
+                local p1, p2 = string.find(str, "\r?\n", pos)
+                local line
+                if p1 then
+                    line = str:sub(pos, p1 - 1)
+                    pos = p2 + 1
+                else
+                    line = str:sub(pos)
+                    pos = nil
+                end
+                return line
+            end
+        end
+
+        local old_dbg_traceback;
+        old_dbg_traceback = hookfunction(getrenv().debug.traceback, function(...)
+            if checkcaller() or not (pcall(old_dbg_traceback, ...)) then
+                return old_dbg_traceback(...)
+            end
+            local StartingString, StackLevel = ...
+            local Traceback = old_dbg_traceback(...)
+            local NewTraceback = {}
+            if typeof(StartingString) == "string" or typeof(StartingString) == "number" then
+                table.insert(NewTraceback, tostring(StartingString))
+            end
+            if typeof(StackLevel) ~= "number" or not tonumber(StackLevel) then
+                StackLevel = 1
+            else
+                StackLevel = math.floor(tonumber(StackLevel))
+            end
+            for Line in TracebackLines(Traceback, StackLevel) do
+                if not ValidTraceback(Line) then continue end
+                table.insert(NewTraceback, Line)
+            end
+            return table.concat(NewTraceback, "\n") .. "\n"
+        end)
+
+        local old_dbg_info;
+        old_dbg_info = hookfunction(getrenv().debug.info, function(...)
+            local ToInspect, LevelOrInfo, _ThreadInfo = ...
+            if checkcaller() or typeof(ToInspect) == "function" or typeof(ToInspect) == "thread" or not pcall(function(LevelOrInfo)
+                old_dbg_info(function() end, LevelOrInfo)
+            end, LevelOrInfo) then
+                return old_dbg_info(...)
+            end
+            ToInspect = math.floor(ToInspect)
+            local ReconstructedConstructedStack = {}
+            for Level = 2, max_stack_depth do
+                local Function, Source, Line, Name, NumberOfArgs, Varargs = old_dbg_info(Level, "fslna")
+                if not Function or not Source or not Line or not Name then break end
+                if isexecutorclosure(Function) and not hidden_fn[Function] then continue end
+                table.insert(ReconstructedConstructedStack, {f = Function, s = Source, l = Line, n = Name, a = { NumberOfArgs, Varargs }})
+            end
+            local InfoLevel = ReconstructedConstructedStack[ToInspect + 1]
+            if not InfoLevel then return old_dbg_info(3e4, LevelOrInfo) end
+            local ReturnResult = {}
+            for idx, info in string.split(LevelOrInfo, "") do
+                local Value = InfoLevel[info]
+                if typeof(Value) == "table" then
+                    for _, v in Value do table.insert(ReturnResult, v) end
+                    continue
+                end
+                table.insert(ReturnResult, Value)
+            end
+            return table.unpack(ReturnResult, 1, #ReturnResult)
+        end)
+
+        local old_getfenv;
+        old_getfenv = hookfunction(getrenv().getfenv, function(...)
+            if checkcaller() then return old_getfenv(...) end
+            local ToInspect = ...
+            local Success, ResultingEnv = pcall(function()
+                if typeof(ToInspect) == "number" and ToInspect >= 0 then return old_getfenv(ToInspect + 3) end
+                return old_getfenv(ToInspect)
+            end)
+            if not Success then
+                if typeof(ToInspect) == "number" and ToInspect >= 0 then return old_getfenv(ToInspect + 3) end
+                return old_getfenv(ToInspect)
+            end
+            if ToInspect == nil or typeof(ToInspect) == "function" then return ResultingEnv end
+            ToInspect = math.floor(ToInspect)
+            local ReconstructedConstructedStack = {}
+            for Level = 1, max_stack_depth do
+                local StackInfoSuccess, Data = pcall(function()
+                    return {Environement = old_getfenv(Level + 3), Function = old_dbg_info(Level + 3, "f")}
+                end)
+                if not StackInfoSuccess or not Data then break end
+                local Environement = Data.Environement
+                local Function = Data.Function
+                if typeof(Environement["getgenv"]) == "function" and isexecutorclosure(Environement["getgenv"]) then
+                    if shared.Hooking.IncludeInStackFunctions[Function] then
+                        Environement = setmetatable(ResultingEnv, {__index = getrenv()})
+                    else
+                        continue
+                    end
+                end
+                table.insert(ReconstructedConstructedStack, Environement)
+            end
+            local InfoLevel = ReconstructedConstructedStack[ToInspect + 1]
+            if not InfoLevel then return old_getfenv(3e4) end
+            return InfoLevel
+        end)
+
+        setstackhidden = setstackhidden or function(fn_or_level, hidden)
+            assert(typeof(hidden) == "boolean", "hidden must be boolean")
+            local ok, fn = pcall(function()
+                if typeof(fn_or_level) == "number" then return debug.info(fn_or_level + 2, "f") end
+                return fn_or_level
+            end)
+            assert(ok and fn, "invalid argument #1 to 'setstackhidden'")
+            hidden_fn[fn] = not hidden
+        end
+    end
+
+    local TrustedFunctions = setmetatable({}, {__mode = "k"})
+    local function TrustFunction(fn) if type(fn) == "function" then TrustedFunctions[fn] = true end return fn end
+    local function IsTrustedFunction(fn) return TrustedFunctions[fn] == true end
+
+    local SafeHook = function(hookfn, ...)
+        local args = {...}
+        local func, inst, metamethod, detour
+        if hookfn == hookmetamethod then inst, metamethod, detour = args[1], args[2], args[3]
+        else func, detour = args[1], args[2] end
+        local original_func
+        if hookfn == hookfunction and iscclosure(func) then detour = newcclosure(detour) end
+        if not iscclosure(detour) then detour = newcclosure(detour) end
+        setstackhidden(detour, true)
+        local ok, _ = pcall(function()
+            TrustFunction(detour)
+            if hookfn == hookmetamethod then original_func = hookfn(inst, metamethod, detour)
+            else original_func = hookfn(func, detour) end
+        end)
+        if not ok then LocalPlayer:Kick("Bypass failed! n1") end
+        return original_func
+    end
+
+    local SafeCall = function(func, ...)
+        if checkcaller() then return func(...) end
+        local old = getthreadidentity()
+        if old ~= 2 then setthreadidentity(2) end
+        local result = {func(...)}
+        if old ~= 2 then setthreadidentity(old) end
+        return table.unpack(result)
+    end
+
+    local monitor_conn = ScriptContext.Error:Connect(TrustFunction(function(message, stack, _)
+        message, stack = tostring(message), tostring(stack)
+        if stack:find("PlayerScripts.Controllers.MiscellaneousController") and message:find("attempt to index number with number") then
+            LocalPlayer:Kick("Bypass failed! n2")
+        end
+    end))
+
+    local oldindex; oldindex = SafeHook(hookmetamethod, ac_script, "__index", function(t, k)
+        local is_caller = not bypassed and checkcaller()
+        if t == ac_script and not is_caller and kProtectedProperties[k] ~= nil then return kProtectedProperties[k] end
+        if checkcaller() then return oldindex(t, k) end
+        return SafeCall(oldindex, t, k)
+    end)
+
+    local oldnewindex; oldnewindex = SafeHook(hookmetamethod, ac_script, "__newindex", function(t, k, v)
+        local is_caller = not bypassed and checkcaller()
+        if t == ac_script and not is_caller and kProtectedProperties[k] ~= nil then
+            kProtectedProperties[k] = v
+            if k == "Enabled" then kProtectedProperties["Disabled"] = not v end
+            if k == "Disabled" then kProtectedProperties["Enabled"] = not v end
+            return
+        end
+        if checkcaller() then return oldnewindex(t, k, v) end
+        return SafeCall(oldnewindex, t, k, v)
+    end)
+
+    client_id = ""
+    last = tick()
+
+    local oldfireserver; oldfireserver = SafeHook(hookfunction, ac_event.FireServer, function(self, ...)
+        local now = tick()
+        local args = {...}
+        if not first_seen then
+            first_seen = true
+            local first_arg = args[1]
+            if type(first_arg) == "table" and #first_arg >= 1 and (type(first_arg[1]) == "string" or type(first_arg[1]) == "number") then
+                client_id = tostring(first_arg[1])
+            else client_id = client_id or "" end
+            last = tick()
+            samples = 1
+            hijack_ready = true
+            return SafeCall(oldfireserver, self, ...)
+        end
+        local interval = now - (last or now)
+        if interval > 0 then
+            if samples == 0 then expected_interval = interval
+            else expected_interval = ema_alpha * interval + (1 - ema_alpha) * expected_interval end
+            samples = samples + 1
+            if expected_interval < min_interval then expected_interval = min_interval end
+        end
+        local res = SafeCall(oldfireserver, self, ...)
+        last = tick()
+        return res
+    end)
+
+    local BuildSubTable = function()
+        local num_empty = math.random(1, 5)
+        local empty_map = {}
+        local empty_slots = {7}
+        empty_map[7] = true
+        while #empty_slots < num_empty do
+            local slot = math.random(1, 6)
+            if not empty_map[slot] then empty_map[slot] = true; table.insert(empty_slots, slot) end
+        end
+        table.sort(empty_slots)
+        local result = {}
+        for i = 1, 7 do if empty_map[i] then result[i] = {} else result[i] = kFilledSub end end
+        return result, empty_slots
+    end
+
+    local ApplyTransforms = function(t, mask, empty_slots)
+        local payload = t[1]
+        local outer_index = #payload
+        local inner_index = empty_slots[math.random(1, #empty_slots)]
+        local derived
+        local outer_val = payload[outer_index]
+        if type(outer_val) == "table" and type(inner_index) == "number" then derived = outer_val[inner_index]
+        else
+            for i = outer_index, 1, -1 do
+                if type(payload[i]) ~= "table" then continue end
+                local candidate = payload[i]
+                if type(inner_index) == "number" and candidate[inner_index] ~= nil then derived = candidate[inner_index]; break
+                else derived = candidate; break end
+            end
+            if derived == nil then derived = {} end
+        end
+        local written = {}
+        for _, value in ipairs(mask) do
+            local slot = kSlotMap[value]
+            if slot and not written[slot] then t[slot] = derived; written[slot] = true end
+        end
+        return t
+    end
+
+    local BuildPayload = function(challenge, mask)
+        local sub_table, empty_slots = BuildSubTable()
+        local total_idx = math.random(1, 8)
+        local payload = {client_id, buffer.tostring(challenge)}
+        local extra_strings = math.random(0, 2)
+        for _ = 1, extra_strings do payload[#payload + 1] = "" end
+        while #payload < (total_idx - 1) do payload[#payload + 1] = math.random(5, 100000) end
+        payload[#payload + 1] = sub_table
+        local t = {payload, {}, nil, nil, nil, nil, nil}
+        return ApplyTransforms(t, mask, empty_slots)
+    end
+
+    task.spawn(function()
+        getfenv().script = ac_script
+        while not hijack_ready do task.wait() end
+        ac_script.Enabled = false
+        ac_event.OnClientEvent:Connect(function(...)
+            last = tick()
+            local remote = Instance.new("RemoteEvent", nil)
+            remote:FireServer()
+            local t = {...}
+            local challenge, index, mask = t[1], t[2], t[3]
+            if typeof(challenge) ~= "buffer" or type(index) ~= "number" or type(mask) ~= "table" then
+                LocalPlayer:Kick("Bypass failed! n3")
+            end
+            local payload = BuildPayload(challenge, mask)
+            task.defer(function()
+                local since_last = tick() - (last or 0)
+                local desired_wait = expected_interval - since_last
+                if desired_wait > 0 then task.wait(desired_wait) end
+                ac_event:FireServer(table.unpack(payload, 1, 5))
+                last = tick()
+                remote:Destroy()
+            end)
+        end)
+        bypassed = true
+        monitor_conn:Disconnect()
+    end)
+
+    for _, name in ipairs(kKickNames) do
+        local func = LocalPlayer[name]
+        if type(func) ~= "function" then return end
+        local oldfunc; oldfunc = SafeHook(hookfunction, func, function(self, ...)
+            if self == LocalPlayer and not checkcaller() then return nil end
+            return oldfunc(self, ...)
+        end)
+    end
+
+    for _, conn in ipairs(getconnections(ScriptContext.Error)) do
+        if not conn.Function then continue end
+        if IsTrustedFunction(conn.Function) then continue end
+        SafeHook(hookfunction, conn.Function, function(...) return nil end)
+    end
+
+    SafeHook(hookfunction, ScriptContext.Error.Connect, function(...) return nil end)
+
+    while not bypassed do task.wait(0.5) end
+    task.wait(1)
+    print("[AC Bypass] Activé et stable.")
+end)
+
+-- ==========================================
+-- 2. OBSIDIAN UI
+-- ==========================================
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Window = Library:CreateWindow({
+    Title = "Yabujin Clone",
+    Footer = "Skin Changer - by Louis",
+    Icon = 95816097006870,
+    NotifySide = "Right",
+    ShowCustomCursor = true,
+})
+
+local Tabs = {
+    Main = Window:AddTab("Skins", "home"),
+    Settings = Window:AddTab("Settings", "settings")
+}
+
+local LeftGroupbox = Tabs.Main:AddLeftGroupbox("Weapon Selection")
+local RightGroupbox = Tabs.Main:AddRightGroupbox("Actions")
+
+-- ==========================================
+-- 3. LOGIQUE DE SKIN CHANGER (Celle de GitHub)
+-- ==========================================
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local Modules = ReplicatedStorage:WaitForChild("Modules", 10)
+local CosmeticLibrary = require(Modules:WaitForChild("CosmeticLibrary", 10))
+local EnumLibrary = require(Modules:WaitForChild("EnumLibrary", 10))
+local PlayerDataController = require(LocalPlayer.PlayerScripts.Controllers:WaitForChild("PlayerDataController", 10))
+
+local cosTypes = {"Skin","Wrap","Charm","Dance","Emote"}
+local function isCosType(c)
+    if not c then return false end
+    for _, t in ipairs(cosTypes) do if c.Type == t then return true end end
+    return false
+end
+
+local localEquipped = {}
+
+local function mkCosmetic(nm, ctype, opts)
+    local base = CosmeticLibrary.Cosmetics[nm]
+    if not base then return nil end
+    local d = {}
+    for k, v in pairs(base) do d[k] = v end
+    d.Name = nm
+    d.Type = d.Type or ctype
+    d.Seed = d.Seed or math.random(1, 1000000)
+    if EnumLibrary then
+        local s, eid = pcall(EnumLibrary.ToEnum, EnumLibrary, nm)
+        if s and eid then d.Enum = eid; d.ObjectID = d.ObjectID or eid end
+    end
+    if opts then
+        if opts.inverted ~= nil then d.Inverted = opts.inverted end
+        if opts.favoritesOnly ~= nil then d.OnlyUseFavorites = opts.favoritesOnly end
+    end
+    return d
+end
+
+-- Hook Unlock All & Equip (Version GitHub)
+local origOwns = CosmeticLibrary.OwnsCosmetic
+CosmeticLibrary.OwnsCosmetic = function(self, inv, nm, wep)
+    if nm:find("MISSING_") or nm == "Bubble Gun" then return origOwns(self, inv, nm, wep) end
+    local c = CosmeticLibrary.Cosmetics[nm]
+    if c and isCosType(c) then return true end
+    return origOwns(self, inv, nm, wep)
+end
+
+local origGet = PlayerDataController.Get
+PlayerDataController.Get = function(self, key)
+    local val = origGet(self, key)
+    if key == "CosmeticInventory" then
+        local prx = {}
+        if val then
+            for k, v in pairs(val) do
+                local c = CosmeticLibrary.Cosmetics[k]
+                if c and isCosType(c) then prx[k] = v end
+            end
+        end
+        return setmetatable(prx, {__index = function(_, k)
+            local c = CosmeticLibrary.Cosmetics[k]
+            if c and isCosType(c) then return true end
+            return nil
+        end})
+    end
+    return val
+end
+
+local origGetWep = PlayerDataController.GetWeaponData
+PlayerDataController.GetWeaponData = function(self, wn)
+    local d = origGetWep(self, wn)
+    if not d then return nil end
+    local m = {}
+    for k, v in pairs(d) do m[k] = v end
+    m.Name = wn
+    if localEquipped[wn] then
+        local eq = localEquipped[wn]
+        if eq.Skin then local sd = mkCosmetic(eq.Skin, "Skin"); if sd then m.Skin = sd; m.Name = sd.Name end end
+        if eq.Wrap then local wd = mkCosmetic(eq.Wrap, "Wrap"); if wd then m.Wrap = wd end end
+        if eq.Charm then local cd = mkCosmetic(eq.Charm, "Charm"); if cd then m.Charm = cd end end
+    end
+    return m
+end
+
+-- Hook Rendu 1
+local cliItem
+pcall(function() cliItem = require(LocalPlayer.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem) end)
+if cliItem and cliItem._CreateViewModel then
+    local origCVM = cliItem._CreateViewModel
+    cliItem._CreateViewModel = function(self, vmRef)
+        local wn, wp = self.Name, self.ClientFighter and self.ClientFighter.Player
+        if wp == LocalPlayer and localEquipped[wn] then
+            local dk = self:ToEnum("Data")
+            local eq = localEquipped[wn]
+            local sd = eq.Skin and mkCosmetic(eq.Skin, "Skin")
+            local wd = eq.Wrap and mkCosmetic(eq.Wrap, "Wrap")
+            local cd = eq.Charm and mkCosmetic(eq.Charm, "Charm")
+            if vmRef[dk] then
+                if sd then vmRef[dk][self:ToEnum("Skin")] = sd; vmRef[dk][self:ToEnum("Name")] = sd.Name end
+                if wd then vmRef[dk][self:ToEnum("Wrap")] = wd end
+                if cd then vmRef[dk][self:ToEnum("Charm")] = cd end
+            elseif vmRef.Data then
+                if sd then vmRef.Data.Skin = sd; vmRef.Data.Name = sd.Name end
+                if wd then vmRef.Data.Wrap = wd end
+                if cd then vmRef.Data.Charm = cd end
+            end
+        end
+        return origCVM(self, vmRef)
+    end
+end
+
+-- Hook Rendu 2 (ClientViewModel - Crucial pour l'affichage en main)
+local vmMod = LocalPlayer.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem:FindFirstChild("ClientViewModel")
+if vmMod then
+    local CVM = require(vmMod)
+    local origNew = CVM.new
+    CVM.new = function(repData, cliItm)
+        local wp = cliItm.ClientFighter and cliItm.ClientFighter.Player
+        local wn = cliItm.Name
+        if wp == LocalPlayer and localEquipped[wn] then
+            local RC = require(ReplicatedStorage.Modules.ReplicatedClass)
+            local dk = RC:ToEnum("Data")
+            repData[dk] = repData[dk] or {}
+            local eq = localEquipped[wn]
+            local sd = eq.Skin and mkCosmetic(eq.Skin, "Skin")
+            local wd = eq.Wrap and mkCosmetic(eq.Wrap, "Wrap")
+            local cd = eq.Charm and mkCosmetic(eq.Charm, "Charm")
+            if sd then repData[dk][RC:ToEnum("Skin")] = sd end
+            if wd then repData[dk][RC:ToEnum("Wrap")] = wd end
+            if cd then repData[dk][RC:ToEnum("Charm")] = cd end
+        end
+        return origNew(repData, cliItm)
+    end
+end
+
+-- Hook FireServer pour Empêcher le serveur de dire non
+local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+local dataRem = remotes and remotes:FindFirstChild("Data")
+local equipRem = dataRem and dataRem:FindFirstChild("EquipCosmetic")
+
+if equipRem then
+    local mt = getrawmetatable(game)
+    local oldNamecall = mt.__namecall
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        if getnamecallmethod() == "FireServer" and self == equipRem then
+            local args = {...}
+            local weapon, cosType, cosName = args[1], args[2], args[3]
+            if weapon and cosType then
+                if cosName and cosName ~= "None" and cosName ~= "" then
+                    localEquipped[weapon] = localEquipped[weapon] or {}
+                    localEquipped[weapon][cosType] = cosName
+                else
+                    if localEquipped[weapon] then localEquipped[weapon][cosType] = nil end
+                end
+                pcall(function() PlayerDataController.CurrentData:Replicate("WeaponInventory") end)
+                -- Force le refresh du ViewModel actif pour que ça s'affiche en main !
+                pcall(function()
+                    local fCtrl = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
+                    local f = fCtrl:GetFighter(LocalPlayer)
+                    if f then
+                        for _, item in pairs(f.Items) do
+                            if item.Name == weapon and item._CreateViewModel and item.ViewModel then
+                                item:_CreateViewModel(item.ViewModel)
+                            end
+                        end
+                    end
+                end)
+            end
+            return -- On ne fait pas oldNamecall, le serveur ne reçoit rien !
+        end
+        return oldNamecall(self, ...)
+    end)
+    setreadonly(mt, true)
+end
+
+-- ==========================================
+-- 4. LISTE DES SKINS & BOUTONS OBSIDIAN
+-- ==========================================
+local weaponSkins = {
+    ["Bow"] = {"Compound Bow", "Raven Bow"},
+    ["Assault Rifle"] = {"AK-47", "AUG"},
+    ["Chainsaw"] = {"Blobsaw", "Handsaws"},
+    ["RPG"] = {"Nuke Launcher", "RPKEY", "Spaceship Launcher"},
+    ["Burst Rifle"] = {"Aqua Burst", "Electro Rifle"},
+    ["Exogun"] = {"Singularity", "Wondergun"},
+    ["Fists"] = {"Boxing Gloves", "Brass Knuckles"},
+    ["Flamethrower"] = {"Lamethrower", "Pixel Flamethrower"},
+    ["Flare Gun"] = {"Dynamite Gun", "Firework Gun"},
+    ["Freeze Ray"] = {"Bubble Ray", "Temporal Ray"},
+    ["Grenade"] = {"Water Balloon", "Whoopee Cushion"},
+    ["Grenade Launcher"] = {"Swashbuckler", "Uranium Launcher"},
+    ["Handgun"] = {"Blaster"},
+    ["Katana"] = {"Lightning Bolt", "Saber"},
+    ["Minigun"] = {"Lasergun 3000", "Pixel Minigun"},
+    ["Paintball Gun"] = {"Boba Gun", "Slime Gun"},
+    ["Revolver"] = {"Sheriff"},
+    ["Slingshot"] = {"Goalpost", "Stick"},
+    ["Subspace Tripmine"] = {"Don't Press", "Spring"},
+    ["Uzi"] = {"Electro Uzi", "Water Uzi"},
+    ["Sniper"] = {"Pixel Sniper", "Hyper Sniper"},
+    ["Knife"] = {"Karambit", "Chancla"},
+}
+
+local weaponList = (function()
+    local list = {}
+    for weapon, _ in pairs(weaponSkins) do table.insert(list, weapon) end
+    table.sort(list)
+    return list
+end)()
+
+local skinList = (function()
+    local allSkins = {"Aucune"}
+    for _, skins in pairs(weaponSkins) do
+        for _, skin in ipairs(skins) do table.insert(allSkins, skin) end
+    end
+    table.sort(allSkins)
+    return allSkins
+end)()
+
+local weaponDropdown = LeftGroupbox:AddDropdown("WeaponSelect", {
+    Values = weaponList, Default = 1, Multi = false, Text = "Choisir une arme"
+})
+local skinDropdown = LeftGroupbox:AddDropdown("SkinSelect", {
+    Values = skinList, Default = 1, Multi = false, Text = "Choisir une skin"
+})
+
+RightGroupbox:AddButton({
+    Text = "Équiper la skin",
+    Tooltip = "Équipe la skin localement (le serveur ne voit rien)",
+    Func = function()
+        local weapon = weaponDropdown.Value
+        local skin = skinDropdown.Value
+        if skin == "Aucune" then skin = nil end
+
+        if not weapon or not skin then
+            Library:Notify({Title = "Erreur", Content = "Sélectionne une arme et une skin.", Duration = 3})
+            return
+        end
+
+        local sd = mkCosmetic(skin, "Skin")
+        if not sd then
+            Library:Notify({Title = "Erreur", Content = "Skin introuvable dans la bibliothèque.", Duration = 3})
+            return
+        end
+
+        localEquipped[weapon] = localEquipped[weapon] or {}
+        localEquipped[weapon].Skin = skin
+        
+        pcall(function() PlayerDataController.CurrentData:Replicate("WeaponInventory") end)
+        pcall(function()
+            local fCtrl = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
+            local f = fCtrl:GetFighter(LocalPlayer)
+            if f then
+                for _, item in pairs(f.Items) do
+                    if item.Name == weapon and item._CreateViewModel and item.ViewModel then
+                        item:_CreateViewModel(item.ViewModel)
+                    end
+                end
+            end
+        end)
+
+        Library:Notify({Title = "Succès", Content = "Skin équipée: " .. skin, Duration = 3})
+    end
+})
+
+RightGroupbox:AddButton({
+    Text = "Reset TOUT",
+    Func = function()
+        localEquipped = {}
+        pcall(function() PlayerDataController.CurrentData:Replicate("WeaponInventory") end)
+        Library:Notify({Title = "Succès", Content = "Tout est reset.", Duration = 3})
+    end
+})
+
+-- ==========================================
+-- 5. CACHER LE GUI (RightControl)
+-- ==========================================
+local UserInputService = game:GetService("UserInputService")
+local guiVisible = true
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        guiVisible = not guiVisible
+        pcall(function() if Library.ScreenGui then Library.ScreenGui.Enabled = guiVisible end end)
+        pcall(function() if Library.Window and Library.Window.Enabled ~= nil then Library.Window.Enabled = guiVisible end end)
+    end
+end)
+
+Library:Notify({
+    Title = "Yabujin Clone",
+    Content = "Script chargé ! Bypass Actif. RightControl pour cacher le menu.",
+    Duration = 5
+})
